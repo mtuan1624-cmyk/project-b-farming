@@ -1,12 +1,15 @@
 [
   {
-    "name": "Testnet Faucet A",
-    "url": "https://faucet-a.example.com",
-    "notes": "Claim 1 lần/24h"
+    "name": "Example GET",
+    "method": "GET",
+    "url": "https://httpbin.org/get?address={wallet}",
+    "success_contains": "origin"
   },
   {
-    "name": "Airdrop B",
-    "url": "https://airdrop-b.example.com",
-    "notes": "Nhiệm vụ đơn giản"
+    "name": "Example POST",
+    "method": "POST",
+    "url": "https://httpbin.org/post",
+    "payload": {"address": "{wallet}"},
+    "success_contains": "json"
   }
 ]
