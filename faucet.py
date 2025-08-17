@@ -1,47 +1,84 @@
-import time
-from typing import Dict, Any, List
+import asyncio
+import json
+import random
+import string
+from typing import Any, Dict, Optional
 import httpx
 
-def send_telegram(bot_token: str, chat_id: str, text: str) -> None:
-    if not bot_token or not chat_id:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
-        with httpx.Client(timeout=10) as cli:
-            cli.post(url, json=payload)
-    except Exception:
-        pass
+# ---- helpers ----
+def _short(addr: str) -> str:
+    return addr[:8] + "…" + addr[-4:]
 
-def do_airdrop_for_wallet(wallet: str, task: Dict[str, Any]) -> bool:
-    """
-    Hàm thực thi kèo cho 1 ví.
-    Tạm thời demo: giả lập request nhẹ (hoặc ping endpoint),
-    sau bạn cắm logic thật vào đây (ký giao dịch, call API dự án…).
-    Trả về True nếu coi là thành công.
-    """
-    try:
-        # ví dụ: ping URL (nếu có)
-        url = task.get("url")
-        if url:
-            with httpx.Client(timeout=10) as cli:
-                cli.head(url)  # ping nhanh
-        # giả lập delay nhỏ để tôn trọng rate limit
-        time.sleep(0.2)
-        return True
-    except Exception:
-        return False
+def _jitter(base: float = 0.05, spread: float = 0.15) -> float:
+    # nghỉ ngắn để giảm bùng nổ request
+    import random
+    return max(0.0, base + random.random() * spread)
 
-def run_batch(wallets: List[str], task: Dict[str, Any], rpm: int) -> Dict[str, int]:
+def _render(value: Any, wallet: str) -> Any:
+    """Thay {wallet} trong chuỗi/payload theo địa chỉ ví"""
+    if isinstance(value, str):
+        return value.replace("{wallet}", wallet)
+    if isinstance(value, dict):
+        return {k: _render(v, wallet) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_render(v, wallet) for v in value]
+    return value
+
+# ---- core ----
+async def run_airdrop(airdrop: Dict[str, Any], wallet: str, client: Optional[httpx.AsyncClient] = None) -> str:
     """
-    Chạy 1 lượt cho danh sách ví (batch nhỏ).
-    rpm: requests-per-minute để giới hạn tốc độ an toàn.
+    airdrop = {
+      "name": "Tên",
+      "method": "GET" | "POST",
+      "url": "https://…?address={wallet}",
+      "headers": {"User-Agent": "xxx"},
+      "payload": {"address": "{wallet}"},
+      "success_contains": "ok" | ["ok","success"]
+    }
     """
-    ok = fail = 0
-    interval = max(60.0 / max(rpm, 1), 0.05)  # giãn cách giữa ví
-    for w in wallets:
-        ok |= do_airdrop_for_wallet(w, task)
-        if not ok:
-            fail += 1
-        time.sleep(interval)
-    return {"ok": ok, "fail": fail}
+    name = airdrop.get("name", "airdrop")
+    method = (airdrop.get("method") or "GET").upper()
+    url = _render(airdrop.get("url", ""), wallet)
+    headers = airdrop.get("headers") or {}
+    payload = _render(airdrop.get("payload"), wallet)
+    ok_mark = airdrop.get("success_contains")
+
+    if not url:
+        return f"[{name}] {_short(wallet)} ❌ thiếu URL"
+
+    close_after = False
+    if client is None:
+        client = httpx.AsyncClient(timeout=httpx.Timeout(20, connect=10), follow_redirects=True)
+        close_after = True
+
+    # Thêm UA đơn giản nếu thiếu
+    headers = {"User-Agent": headers.get("User-Agent") or "Mozilla/5.0 RotChainBot/1.0", **headers}
+
+    tries = 3
+    for attempt in range(1, tries + 1):
+        try:
+            await asyncio.sleep(_jitter())
+            if method == "POST":
+                r = await client.post(url, json=payload, headers=headers)
+            else:
+                r = await client.get(url, headers=headers)
+            text = r.text[:2000]  # cắt tránh log dài
+            if ok_mark:
+                if isinstance(ok_mark, str):
+                    ok = ok_mark.lower() in text.lower()
+                else:
+                    ok = any(m.lower() in text.lower() for m in ok_mark)
+            else:
+                ok = r.status_code < 400
+            if ok:
+                msg = f"[{name}] {_short(wallet)} ✅ {r.status_code}"
+            else:
+                msg = f"[{name}] {_short(wallet)} ⚠️ {r.status_code} / body không khớp"
+            return msg
+        except Exception as e:
+            if attempt == tries:
+                return f"[{name}] {_short(wallet)} ❌ lỗi: {e}"
+            await asyncio.sleep(0.8 * attempt)
+    if close_after:
+        await client.aclose()
+    return f"[{name}] {_short(wallet)} ❌ không rõ"
