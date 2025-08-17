@@ -4,3 +4,5 @@ pydantic
 python-dotenv
 tzdata
 requests
+web3
+eth-account
