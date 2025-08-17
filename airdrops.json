@@ -1,1 +1,12 @@
-
+[
+  {
+    "name": "Testnet Faucet A",
+    "url": "https://faucet-a.example.com",
+    "notes": "Claim 1 lần/24h"
+  },
+  {
+    "name": "Airdrop B",
+    "url": "https://airdrop-b.example.com",
+    "notes": "Nhiệm vụ đơn giản"
+  }
+]
