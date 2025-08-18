@@ -3,133 +3,76 @@ import json
 import asyncio
 import logging
 from datetime import datetime
+from typing import List, Dict, Any
+
+import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+# --- import theo dự án bạn đang có ---
 from config import BOT_TOKEN, TELEGRAM_CHAT_ID, TIMEZONE, MAX_CONCURRENCY
 from wallet_loader import load_wallets
 from faucet import run_airdrop
-import httpx
+# --------------------------------------
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-async def send_telegram(text: str):
+TELEGRAM_API = "https://api.telegram.org"
+
+# ========= helper =========
+def chunk(text: str, size: int = 3500) -> List[str]:
+    return [text[i:i+size] for i in range(0, len(text), size)]
+
+async def send_telegram(text: str, parse_mode: str | None = None):
+    """Gửi tin nhắn Telegram, tự chia nhỏ nếu quá dài."""
     if not BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logging.warning("Thiếu BOT_TOKEN/TELEGRAM_CHAT_ID → bỏ qua gửi Telegram.")
         return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    url = f"{TELEGRAM_API}/bot{BOT_TOKEN}/sendMessage"
     async with httpx.AsyncClient(timeout=20) as client:
-        await client.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
+        for part in chunk(text, 3500):
+            data = {"chat_id": TELEGRAM_CHAT_ID, "text": part}
+            if parse_mode:
+                data["parse_mode"] = parse_mode
+            try:
+                await client.post(url, data=data)
+            except Exception as e:
+                logging.error(f"send_telegram error: {e}")
 
+def load_airdrops(path: str = "airdrops.json") -> List[Dict[str, Any]]:
+    """Đọc danh sách airdrop; trả [] nếu lỗi."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            logging.error("airdrops.json: format phải là list.")
+            return []
+        return data
+    except FileNotFoundError:
+        logging.error("Không tìm thấy airdrops.json.")
+        return []
+    except Exception as e:
+        logging.error(f"Đọc airdrops.json lỗi: {e}")
+        return []
+
+# ========= core =========
 async def process_airdrops():
     wallets = load_wallets()
     if not wallets:
-        logging.error("Không có ví để chạy.")
+        msg = "❗ Không có ví để chạy. Hãy tạo ví (wallet_gen.py) hoặc tải wallets.txt."
+        logging.error(msg)
+        await send_telegram(msg)
         return
 
-    with open("airdrops.json", "r", encoding="utf-8") as f:
-        airdrops = json.load(f)
-
-    limits = httpx.Limits(max_connections=MAX_CONCURRENCY, max_keepalive_connections=MAX_CONCURRENCY)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(25, connect=10), limits=limits) as client:
-        sem = asyncio.Semaphore(MAX_CONCURRENCY)
-
-        async def worker(air, w):
-            async with sem:
-                return await run_airdrop(air, w, client)
-
-        tasks = []
-        for w in wallets:
-            for air in airdrops:
-                tasks.append(worker(air, w))
-
-        logging.info(f"Chạy {len(tasks)} tác vụ (wallets={len(wallets)}, airdrops={len(airdrops)}, concurrency={MAX_CONCURRENCY})…")
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    ok, fail = 0, 0
-    lines = []
-    for r in results:
-        if isinstance(r, Exception):
-            fail += 1
-            lines.append(f"❌ {r}")
-        else:
-            lines.append(r)
-            if "✅" in r:
-                ok += 1
-            elif "⚠️" in r or "❌" in r:
-                fail += 1
-
-    report = f"⏱ {datetime.now().isoformat(timespec='seconds')}\n✅ OK: {ok} | ❌ Lỗi/Cảnh báo: {fail}\n" + "\n".join(lines[:50])
-    print(report[:3500])
-    await send_telegram(report[:3500])
-
-async def main():
-    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-    # 2 lần/ngày; đổi hours=6 (4 lần/ngày) hoặc minutes=30 nếu muốn dày hơn
-    scheduler.add_job(process_airdrops, "interval", hours=12, id="airdrop_job", replace_existing=True)
-    scheduler.start()
-    print(f"Bot đã khởi động (TZ={TIMEZONE}, concurrency={MAX_CONCURRENCY}). Đợi lịch chạy…")
-    await asyncio.Event().wait()
-
-if __name__ == "__main__":
-    asyncio.run(main())
-    # main.py
-import os
-import json
-import asyncio
-import logging
-from datetime import datetime
-from typing import List, Dict, Any
-
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import httpx
-
-from config import BOT_TOKEN, TELEGRAM_CHAT_ID, TIMEZONE, MAX_CONCURRENCY
-from wallet_loader import load_wallets
-from faucet import run_airdrop
-
-# -------- logging --------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
-
-TG_MAX = 4000  # lề an toàn < 4096 ký tự
-
-async def send_telegram(text: str) -> None:
-    """Gửi báo cáo Telegram (nếu đã cấu hình)."""
-    if not BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logging.warning("Thiếu BOT_TOKEN/TELEGRAM_CHAT_ID → bỏ qua gửi Telegram.")
-        return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    async with httpx.AsyncClient(timeout=20) as client:
-        await client.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
-
-def _load_airdrops() -> List[Dict[str, Any]]:
-    """Đọc & kiểm tra airdrops.json tối thiểu."""
-    with open("airdrops.json", "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, list) or not data:
-        raise RuntimeError("airdrops.json phải là list và không rỗng.")
-    for i, it in enumerate(data, 1):
-        if not isinstance(it, dict) or not it.get("url"):
-            raise RuntimeError(f"airdrops.json mục #{i} thiếu 'url'.")
-    return data
-
-async def process_airdrops() -> None:
-    wallets = load_wallets()
-    if not wallets:
-        logging.error("Không có ví để chạy (wallets.txt rỗng?).")
+    airdrops = load_airdrops()
+    if not airdrops:
+        msg = "❗ Không có airdrop trong airdrops.json."
+        logging.error(msg)
+        await send_telegram(msg)
         return
 
-    try:
-        airdrops = _load_airdrops()
-    except Exception as e:
-        logging.error(f"Lỗi đọc airdrops.json: {e}")
-        return
-
-    # httpx client dùng chung + giới hạn kết nối
     limits = httpx.Limits(
         max_connections=MAX_CONCURRENCY,
         max_keepalive_connections=MAX_CONCURRENCY
@@ -139,9 +82,9 @@ async def process_airdrops() -> None:
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
         sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
-        async def worker(air: Dict[str, Any], w: str):
+        async def worker(airdrop, wallet):
             async with sem:
-                return await run_airdrop(air, w, client)
+                return await run_airdrop(airdrop, wallet, client)
 
         tasks: List[asyncio.Task] = []
         for w in wallets:
@@ -155,43 +98,75 @@ async def process_airdrops() -> None:
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # tổng hợp báo cáo
-    ok = fail = 0
+    ok, warn_or_fail = 0, 0
     lines: List[str] = []
     for r in results:
         if isinstance(r, Exception):
-            fail += 1
-            lines.append(f"❌ {r}")
+            warn_or_fail += 1
+            lines.append(f"❌ {type(r).__name__}: {r}")
         else:
             lines.append(r)
             if "✅" in r:
                 ok += 1
             elif "⚠️" in r or "❌" in r:
-                fail += 1
+                warn_or_fail += 1
 
-    head = f"⏱ {datetime.now().isoformat(timespec='seconds')}\n✅ OK: {ok} | ❌ Lỗi/Cảnh báo: {fail}\n"
-    body = "\n".join(lines)
-    report = (head + body)[:TG_MAX]
+    header = (
+        f"⏱ {datetime.now().isoformat(timespec='seconds')}\n"
+        f"📊 Kết quả: ✅ {ok} | ⚠️/❌ {warn_or_fail}\n"
+        f"🧪 Ví: {len(wallets)} | Airdrop: {len(airdrops)} | CC: {MAX_CONCURRENCY}\n"
+    )
+    body = "\n".join(lines[:60])
+    report = header + body
 
-    print(report)
-    await send_telegram(report)
+    print(report[:4000])
+    await send_telegram(report[:4000])
 
-async def main() -> None:
+async def main():
+    # Cho phép chỉnh tần suất qua ENV nếu muốn
+    interval_minutes = int(os.getenv("RUN_EVERY_MIN", "0") or "0")
+    interval_hours = int(os.getenv("RUN_EVERY_H", "6") or "6")
+
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-    # chạy mỗi 12 giờ (2 lần/ngày). Muốn dày hơn: đổi hours=6 hoặc minutes=30
-    scheduler.add_job(process_airdrops, "interval", hours=12,
-                      id="airdrop_job", replace_existing=True)
+
+    if interval_minutes > 0:
+        scheduler.add_job(
+            process_airdrops,
+            "interval",
+            minutes=interval_minutes,
+            id="airdrop_job",
+            replace_existing=True
+        )
+        freq_str = f"{interval_minutes} phút/lần"
+    else:
+        scheduler.add_job(
+            process_airdrops,
+            "interval",
+            hours=interval_hours,
+            id="airdrop_job",
+            replace_existing=True
+        )
+        freq_str = f"{interval_hours} giờ/lần"
+
     scheduler.start()
+    hello = (
+        f"🤖 Bot khởi động.\n"
+        f"TZ: {TIMEZONE} | Concurrency: {MAX_CONCURRENCY}\n"
+        f"Lịch chạy: {freq_str}\n"
+        f"→ Dùng ENV RUN_EVERY_MIN hoặc RUN_EVERY_H để đổi tần suất."
+    )
+    print(hello)
+    await send_telegram(hello)
 
-    print(f"Bot đã khởi động (TZ={TIMEZONE}, concurrency={MAX_CONCURRENCY}). Đợi lịch chạy…")
-    # chạy 1 lần ngay khi start để test
-    await process_airdrops()
+    # chạy ngay 1 lượt khi khởi động (tùy chọn)
+    if os.getenv("RUN_ON_START", "1") == "1":
+        await process_airdrops()
 
-    try:
-        await asyncio.Event().wait()  # giữ tiến trình
-    except (KeyboardInterrupt, SystemExit):
-        print("Đang dừng bot…")
-        scheduler.shutdown(wait=False)
+    # giữ event loop sống
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Stopped by user.")
