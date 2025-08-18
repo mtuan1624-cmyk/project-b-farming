@@ -38,7 +38,6 @@ async def run_airdrop(
       "headers": {"User-Agent": "xxx"},
       "payload": {"address": "{wallet}"},
       "success_contains": "ok" | ["ok","success"]
-    }
     """
     name = airdrop.get("name", "airdrop")
     method = (airdrop.get("method") or "GET").upper()
