@@ -1,15 +1,34 @@
 [
   {
-    "name": "Example GET",
+    "name": "Galxe Quest",
     "method": "GET",
     "url": "https://httpbin.org/get?address={wallet}",
     "success_contains": "origin"
   },
   {
-    "name": "Example POST",
+    "name": "Zealy Check-In",
     "method": "POST",
     "url": "https://httpbin.org/post",
-    "payload": {"address": "{wallet}"},
+    "payload": { "address": "{wallet}" },
     "success_contains": "json"
+  },
+  {
+    "name": "Layer3 Mission",
+    "method": "GET",
+    "url": "https://httpbin.org/get?wallet={wallet}",
+    "success_contains": "origin"
+  },
+  {
+    "name": "Crew3 Daily",
+    "method": "POST",
+    "url": "https://httpbin.org/post",
+    "payload": { "wallet": "{wallet}" },
+    "success_contains": "json"
+  },
+  {
+    "name": "Faucet Test",
+    "method": "GET",
+    "url": "https://httpbin.org/get?addr={wallet}",
+    "success_contains": "origin"
   }
 ]
