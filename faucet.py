@@ -1,19 +1,19 @@
-# faucet.py
 import asyncio
-from typing import Any, Dict, Optional, Union
 import httpx
+from typing import Any, Dict, Optional
 
-# -------- helpers --------
+# ---- helpers ----
 def _short(addr: str) -> str:
+    """Rút gọn hiển thị địa chỉ ví"""
     return addr[:8] + "…" + addr[-4:]
 
 def _jitter(base: float = 0.05, spread: float = 0.15) -> float:
-    # nghỉ ngắn để giảm bùng nổ request
+    """Thêm delay ngẫu nhiên để tránh spam server"""
     import random
     return max(0.0, base + random.random() * spread)
 
 def _render(value: Any, wallet: str) -> Any:
-    """Thay {wallet} trong chuỗi/payload theo địa chỉ ví"""
+    """Thay {wallet} trong chuỗi/payload bằng địa chỉ ví"""
     if isinstance(value, str):
         return value.replace("{wallet}", wallet)
     if isinstance(value, dict):
@@ -22,15 +22,17 @@ def _render(value: Any, wallet: str) -> Any:
         return [_render(v, wallet) for v in value]
     return value
 
-# -------- core --------
+# ---- core ----
 async def run_airdrop(
     airdrop: Dict[str, Any],
     wallet: str,
     client: Optional[httpx.AsyncClient] = None
 ) -> str:
     """
+    Chạy 1 airdrop/faucet cho 1 ví.
+
     airdrop = {
-      "name": "Tên",
+      "name": "Tên nhiệm vụ",
       "method": "GET" | "POST",
       "url": "https://…?address={wallet}",
       "headers": {"User-Agent": "xxx"},
@@ -43,21 +45,21 @@ async def run_airdrop(
     url = _render(airdrop.get("url", ""), wallet)
     headers = airdrop.get("headers") or {}
     payload = _render(airdrop.get("payload"), wallet)
-    ok_mark: Union[str, list, None] = airdrop.get("success_contains")
+    ok_mark = airdrop.get("success_contains")
 
     if not url:
         return f"[{name}] {_short(wallet)} ❌ thiếu URL"
 
-    created_client = False
+    close_after = False
     if client is None:
         client = httpx.AsyncClient(
             timeout=httpx.Timeout(20, connect=10),
-            follow_redirects=True,
+            follow_redirects=True
         )
-        created_client = True
+        close_after = True
 
-    # Thêm UA đơn giản nếu thiếu
-    headers = {"User-Agent": headers.get("User-Agent") or "Mozilla/5.0 RotChainBot/1.0", **headers}
+    # Nếu chưa có UA thì thêm mặc định
+    headers = {"User-Agent": headers.get("User-Agent") or "Mozilla/5.0 ProjectB/1.0", **headers}
 
     tries = 3
     for attempt in range(1, tries + 1):
@@ -78,17 +80,21 @@ async def run_airdrop(
                 ok = r.status_code < 400
 
             if ok:
-                return f"[{name}] {_short(wallet)} ✅ {r.status_code}"
+                msg = f"[{name}] {_short(wallet)} ✅ {r.status_code}"
             else:
-                return f"[{name}] {_short(wallet)} ⚠️ {r.status_code} / body không khớp"
+                msg = f"[{name}] {_short(wallet)} ⚠️ {r.status_code} / body không khớp"
+
+            if close_after:
+                await client.aclose()
+            return msg
 
         except Exception as e:
             if attempt == tries:
+                if close_after:
+                    await client.aclose()
                 return f"[{name}] {_short(wallet)} ❌ lỗi: {e}"
             await asyncio.sleep(0.8 * attempt)
 
-    # đóng client nếu do hàm này tạo
-    if created_client:
+    if close_after:
         await client.aclose()
-
     return f"[{name}] {_short(wallet)} ❌ không rõ"
